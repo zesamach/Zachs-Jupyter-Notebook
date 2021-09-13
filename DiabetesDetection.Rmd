@@ -1,0 +1,458 @@
+---
+title: "Boosting Models"
+output: html_notebook
+---
+
+
+
+Load our data and packages. 
+Looking at the dictionary, we see that everything is factors, not numeric variables,
+so we change everything to a factor, except for the last column, which is what we are predicting, and is already a dummy. 
+
+Here's a link describing the data: http://liacs.leidenuniv.nl/~puttenpwhvander/library/cc2000/problem.html
+
+
+
+```{r}
+library(pacman)
+p_load(xgboost, fastAdaboost,  fastDummies, tidyverse, vtable, ROCR, Matrix, caret, stringr, car)
+
+Diabetes <- read.csv("C:/Users/Mary Jane/Downloads/Diabetes.csv")
+
+
+sumtable(Diabetes)
+view(Diabetes)
+summary(Diabetes)
+```
+
+```{r}
+Diabetes$AtHomeFlag <- 0
+Diabetes$AtHomeFlag[Diabetes$Glucose==0] <- 1
+Diabetes$AtHomeFlag[Diabetes$BloodPressure==0] <- 1
+Diabetes$AtHomeFlag[Diabetes$SkinThickness==0] <- 1
+Diabetes$AtHomeFlag[Diabetes$Insulin==0] <- 1
+Diabetes$AtHomeFlag[Diabetes$BMI==0] <- 1
+```
+
+
+```{r}
+
+Diabetes$Glucose[Diabetes$Glucose == 0] <- NA 
+Diabetes$BloodPressure[Diabetes$BloodPressure == 0] <- NA
+Diabetes$SkinThickness[Diabetes$SkinThickness == 0] <- NA
+Diabetes$Insulin[Diabetes$Insulin == 0] <- NA
+Diabetes$BMI[Diabetes$BMI == 0] <- NA
+Diabetes$Age[Diabetes$Age == 0] <- NA
+
+
+
+
+Diabetes$Pregnancies[is.na(Diabetes$Pregnancies)]<-median(Diabetes$Pregnancies,na.rm=TRUE)
+Diabetes$Glucose[is.na(Diabetes$Glucose)]<-median(Diabetes$Glucose,na.rm=TRUE)
+Diabetes$BloodPressure[is.na(Diabetes$BloodPressure)]<-median(Diabetes$BloodPressure,na.rm=TRUE)
+Diabetes$SkinThickness[is.na(Diabetes$SkinThickness)]<-median(Diabetes$SkinThickness,na.rm=TRUE)
+Diabetes$Insulin[is.na(Diabetes$Insulin)]<-median(Diabetes$Insulin,na.rm=TRUE)
+Diabetes$BMI[is.na(Diabetes$BMI)]<-median(Diabetes$BMI,na.rm=TRUE)
+Diabetes$DiabetesPedigreeFunction[is.na(Diabetes$DiabetesPedigreeFunction)]<-median(Diabetes$DiabetesPedigreeFunction,na.rm=TRUE)
+Diabetes$Age[is.na(Diabetes$Age)]<-median(Diabetes$Age,na.rm=TRUE)
+
+
+```
+
+
+
+```{r}
+Diabetes
+```
+
+
+
+Partition
+```{r}
+set.seed(112321)
+
+Diabetes <- Diabetes %>% mutate(id = row_number())
+
+# Sample randomly 70% to be our training set:
+X_Train <- Diabetes %>% sample_frac(0.75)
+
+X_Train2 <- X_Train %>% select(-Outcome,-AtHomeFlag,-DiabetesPedigreeFunction,-id) %>% as.matrix()
+labels <- X_Train$Outcome %>% as.matrix()
+Train <- xgb.DMatrix(X_Train2, label = labels)
+
+#Take the rest (anti-join) to be our test set:
+X_Test <- Diabetes %>% anti_join(X_Train, by="id")
+
+X_Test2 <- X_Test %>% select(-Outcome,-AtHomeFlag,-DiabetesPedigreeFunction,-id) %>% as.matrix()
+labels_Test <- X_Test$Outcome %>% as.matrix()
+Test <- xgb.DMatrix(X_Test2, label = labels_Test)
+
+
+Train
+```
+```{r}
+X_Train
+```
+
+
+TREE
+```{r}
+
+Tree <- rpart(as.factor(Outcome) ~ Pregnancies+Glucose+BloodPressure+SkinThickness+Insulin+BMI+Age,data=X_Train,control = rpart.control(cp=.0001,minsplit=30))
+rpart.plot(Tree)
+```
+
+```{r}
+error<- Tree$cptable[,"xerror"]
+
+
+bestcp <- Tree$cptable[which.min((error)*(error/(Tree$cptable[,"nsplit"]))),"CP"]
+
+
+
+printcp(Tree)
+
+prunedTree <- prune(Tree,cp=bestcp)
+```
+9 splits is best
+```{r}
+prunedTree <- prune(Tree,cp=0.0097561)
+```
+
+
+
+```{r}
+rpart.plot(prunedTree, type = 5)
+```
+
+```{r}
+prp(prunedTree,
+type = 5, # left and right split labels (see Figure 2)
+clip.right.labs = TRUE, # full right split labels
+extra = 101, # show nbr of obs and percentages (see Figure 3)
+under = TRUE,# position extra info _under_ the boxe
+cex = 1,
+under.cex = 1, # size of text under the boxes (default is .8)
+fallen.leaves = TRUE, # put leaves at the bottom of plot
+box.palette = "RdYlGn", # color of the boxes
+branch = .1, # branch lines with narrow shoulders and down slopes
+round = 0, # no rounding of node corners i.e. use rectangles
+leaf.round = 9, # round leaf nodes (for leaves, this supersedes the round arg)
+prefix = "Positive=", # prepend this string to the node labels
+main = "Diabetes", # main title
+cex.main = 1, # use big text for main title
+branch.col = "gray", # color of branch lines
+branch.lwd = 2) # line width of branch lines
+
+```
+
+
+```{r}
+p_load(ROCR)
+PredictedAcceptanceProbabilities_Train <- predict(prunedTree)
+
+```
+
+```{r}
+data_frame(PredictedAcceptanceProbabilities_Train[,2])
+```
+
+
+
+```{r}
+n<-dim(X_Train)[1]
+X_Train_2<-X_Train[1:(n),]
+X_Train
+```
+
+```{r}
+ROC_Predictions <- prediction(predictions = PredictedAcceptanceProbabilities_Train[,2], labels = (X_Train$Outcome)
+)
+ROC_Performance <- performance(ROC_Predictions, "sens", "fpr")
+plot(ROC_Performance, xlab = "False Positive Rate (1 - Specificity)", ylab="Sensitivity")
+AUC <- performance(ROC_Predictions, "auc")
+AUC <- as.numeric(AUC@y.values[1])
+text(0.8,0.2, paste("AUC = " , round(AUC,3)))
+abline(0,1)
+```
+
+```{r}
+
+p_load(caret)
+cutoff <- .5
+PredictedClass <- as.factor(ifelse(PredictedAcceptanceProbabilities_Train[,2] >= cutoff, 1, 0))
+Targets <- as.factor(X_Train_2$Outcome)
+ConfusionMatrix <- confusionMatrix(PredictedClass, Targets, positive = "1")
+ConfusionMatrix
+
+```
+
+```{r}
+PredictedAcceptanceProbabilities_Test <- predict(prunedTree, newdata=X_Test)
+
+```
+
+
+```{r}
+ROC_Predictions_Test <- prediction(predictions = PredictedAcceptanceProbabilities_Test[,2], labels = X_Test$Outcome)
+ROC_Performance_Test <- performance(ROC_Predictions_Test, "sens", "fpr")
+plot(ROC_Performance_Test, xlab = "False Positive Rate (1 - Specificity)", ylab="Sensitivity")
+AUC <- performance(ROC_Predictions_Test, "auc")
+AUC <- as.numeric(AUC@y.values[1])
+text(0.8,0.2, paste("AUC = " , round(AUC,3)))
+abline(0,1)
+```
+
+
+
+
+
+RANDOM FOREST
+```{r}
+forest <- randomForest(as.factor(Outcome) ~ Pregnancies+Glucose+BloodPressure+SkinThickness+Insulin+BMI+Age, data=X_Train, ntree=1000, mtry = 3, importance = TRUE, sampsize = nrow(X_Train), replace = TRUE)
+```
+
+```{r}
+View(forest$importance)
+```
+
+
+```{r}
+forest <- randomForest(as.factor(Outcome)~ Age+Pregnancies+BloodPressure+SkinThickness+Insulin ,data=X_Train, ntree=10000, mtry = 5, maxnodes = 20, importance = TRUE, strata = (X_Train$BMI), sampsize = 24, replace = FALSE)
+```
+
+
+```{r}
+pred <- as.numeric(predict(forest, type="prob", newdata=X_Train)[,2])
+New_ROC_Predictions <- prediction(predictions = pred, labels = X_Train$Outcome)
+New_ROC_Performance <- performance(New_ROC_Predictions, "sens", "fpr")
+plot(New_ROC_Performance, xlab = "False Positive Rate (1 - Specificity)", ylab="Sensitivity")
+NewAUC <- performance(New_ROC_Predictions, "auc")
+NewAUC <- as.numeric(NewAUC@y.values[1])
+text(0.8,0.2, paste("AUC = " , round(NewAUC,3)))
+abline(0,1)
+```
+
+```{r}
+pred <- as.numeric(predict(forest, type="prob", newdata=X_Test)[,2])
+New_ROC_Predictions <- prediction(predictions = pred, labels = X_Test$Outcome)
+New_ROC_Performance <- performance(New_ROC_Predictions, "sens", "fpr")
+plot(New_ROC_Performance, xlab = "False Positive Rate (1 - Specificity)", ylab="Sensitivity")
+NewAUC <- performance(New_ROC_Predictions, "auc")
+NewAUC <- as.numeric(NewAUC@y.values[1])
+text(0.8,0.2, paste("AUC = " , round(NewAUC,3)))
+abline(0,1)
+```
+
+
+
+Adaptive Boosting:
+https://cran.r-project.org/web/packages/fastAdaboost/fastAdaboost.pdf
+```{r}
+adaModel <- adaboost(Outcome ~ Pregnancies+Glucose+BloodPressure+SkinThickness+Insulin+BMI+Age, data=X_Train,strata = (X_Train$BMI),tree_depth = 11,n_rounds = 1000, nIter = 15)
+
+```
+
+Evaluate:
+```{r}
+adaPred <- predict(adaModel, newdata=X_Test)
+adaProb <- adaPred$prob[,2]
+
+adaROC <- performance(prediction(adaProb, X_Test$Outcome), "tpr", "fpr")
+adaAUC <- as.numeric(performance(prediction(adaProb, X_Test$Outcome), "auc")@y.values[1])
+
+plot(adaROC)
+abline(0,1)
+```
+
+```{r}
+adaAUC
+
+```
+
+
+
+
+```{r}
+Train
+```
+
+
+ 
+Now xgBoost:
+https://cran.r-project.org/web/packages/xgboost/xgboost.pdf
+xgBoost requires a specific matrix object to make its predictions off of. 
+It also doesn't handle factor variables very well.
+So we'll convert it beforehand using fastDummies, and then converting it to a matrix. 
+Then we convert that regular base R matrix to an xgBoost Data Matrix (xgb.DMatrix)
+
+We'll do it for our test set, too.
+
+Then we train the model
+
+```{r}
+
+set.seed(112321)
+
+xgbModel <- xgboost(data = Train, objective = "binary:logistic" , nrounds = 1000, subsample=.25, colsample_bytree = 1, max_depth = 20,strata=X_Train$BMI, eta=0.001, verbose=FALSE)
+```
+ 
+
+ 
+```{r}
+xgbProb <- predict(xgbModel, Test)
+
+xgbROC <- performance(prediction(xgbProb, X_Test$Outcome), "tpr", "fpr")
+xgbAUC <- as.numeric(performance(prediction(xgbProb, X_Test$Outcome), "auc")@y.values[1])
+
+
+plot(xgbROC, col="green", lty=1)
+plot(adaROC, col="red", lty=2, add=TRUE)
+abline(0,1)
+
+```
+ 
+```{r}
+xgbAUC
+```
+ 
+```{r}
+X_Test<-X_Test%>%mutate(prob=xgbProb)
+```
+
+```{r}
+X_Test
+```
+
+
+```{r}
+X_Test <- X_Test %>% mutate(id = row_number())
+
+X_Test %>%
+   count(prob>.5)
+```
+
+
+ 
+```{r}
+ols = lm(X_Test$prob ~Age+Pregnancies+BloodPressure+SkinThickness+Insulin+BMI,BMI,data=X_Test)
+```
+ 
+```{r}
+ols
+```
+
+
+
+```{r}
+ library(AER)
+ Coeff_Table<-data.frame(coeftest(ols)[-c(2,4), ])
+```
+
+ 
+```{r}
+Coeff_Table['AbsEst']=abs(Coeff_Table$Estimate)
+Coeff_Table['AbsErr']=abs(Coeff_Table$Std..Error)
+Coeff_Table['Check']=Coeff_Table['AbsEst']-Coeff_Table['AbsErr']
+```
+ 
+```{r}
+Final_Coeffs<-Coeff_Table %>% filter(Check > 0)
+Final_Coeffs<-Final_Coeffs %>% filter(Pr...t.. < 0.03)
+Final_Coeffs<-Final_Coeffs[order(-Final_Coeffs$AbsEst),]
+Final_Coeffs
+```
+```{r}
+p_load(DiagrammeR)
+
+xgb.plot.tree(model = xgbModel, trees = 1)
+```
+ 
+ 
+At Home Model 
+```{r}
+Diabetes2<-data.frame(Diabetes$Pregnancies,Diabetes$Age,Diabetes$AtHomeFlag,Diabetes$BMI,Diabetes$Outcome)
+
+
+
+Diabetes2<-Diabetes2 %>% filter(Diabetes2$Diabetes.AtHomeFlag == 1)
+
+Diabetes2<-Diabetes2 %>%select(-Diabetes.AtHomeFlag)
+```
+
+
+```{r}
+view(Diabetes2)
+```
+
+ 
+```{r}
+set.seed(112321)
+
+
+Diabetes2 <- Diabetes2 %>% mutate(id = row_number())
+
+# Sample randomly 75% to be our training set:
+X_Train <- Diabetes2 %>% sample_frac(0.75)
+
+X_Train3 <- X_Train %>% select(-Diabetes.Outcome,-id) %>% as.matrix()
+labels <- X_Train$Diabetes.Outcome %>% as.matrix()
+Train2 <- xgb.DMatrix(X_Train3, label = labels)
+
+#Take the rest (anti-join) to be our test set:
+X_Test <- Diabetes2 %>% anti_join(X_Train, by="id")
+
+X_Test3 <- X_Test %>% select(-Diabetes.Outcome,-id) %>% as.matrix()
+labels_Test <- X_Test$Diabetes.Outcome %>% as.matrix()
+Test2 <- xgb.DMatrix(X_Test3, label = labels_Test)
+
+```
+ 
+```{r}
+set.seed(112321)
+
+xgbModel_athome <- xgboost(data = Train2, objective = "binary:logistic" , nrounds = 20, subsample=.25, colsample_bytree = 1,strata=X_Train$BMI, max_depth = 3, eta=.9, verbose=FALSE)
+```
+ 
+```{r}
+xgbProb2 <- predict(xgbModel_athome, Test2)
+
+xgbROC2 <- performance(prediction(xgbProb2, X_Test$Diabetes.Outcome), "tpr", "fpr")
+xgbAUC2 <- as.numeric(performance(prediction(xgbProb2, X_Test$Diabetes.Outcome), "auc")@y.values[1])
+
+
+plot(xgbROC2, col="green", lty=1)
+abline(0,1)
+```
+ 
+```{r}
+xgbAUC2
+```
+ 
+```{r}
+X_Test<-X_Test%>%mutate(prob=xgbProb2)
+```
+ 
+```{r}
+X_Test <- X_Test %>% mutate(id = row_number())
+
+X_Test %>%
+   count(prob>.5)
+```
+ 
+```{r}
+ols = lm(X_Test$prob ~ Diabetes.Pregnancies+Diabetes.Age+Diabetes.Age,Diabetes.Age,data=X_Test)
+```
+ 
+```{r}
+ols
+```
+ 
+
+```{r}
+p_load(DiagrammeR)
+
+xgb.plot.tree(model = xgbModel_athome, trees = 1)
+```
+ 
+ 
